@@ -105,6 +105,96 @@ def course_card(course):
             if st.button("Manage", key=f"manage_{course['id']}"):
                 st.session_state.current_course = course
 
+
+def enroll_student(service, course_id, student_email):
+    """Enroll a student in a course"""
+    student = {
+        'userId': student_email
+    }
+    
+    try:
+        # Check if student is already enrolled
+        existing = service.courses().students().list(
+            courseId=course_id,
+            userId=student_email
+        ).execute()
+        
+        if existing.get('students'):
+            return {'warning': 'Student already enrolled'}
+            
+        # If not enrolled, add them
+        enrollment = service.courses().students().create(
+            courseId=course_id,
+            body=student
+        ).execute()
+        return {'success': f"Student {student_email} enrolled successfully"}
+        
+    except Exception as e:
+        return {'error': str(e)}
+
+
+
+
+def create_coursework(service, course_id, title, description, due_date, materials=None):
+    """Create a new coursework/assignment"""
+    coursework = {
+        'title': title,
+        'description': description,
+        'workType': 'ASSIGNMENT',
+        'state': 'PUBLISHED',
+        'dueDate': {
+            'year': due_date.year,
+            'month': due_date.month,
+            'day': due_date.day
+        },
+        'dueTime': {
+            'hours': 23,
+            'minutes': 59
+        }
+    }
+    
+    if materials:
+        coursework['materials'] = materials
+        
+    return service.courses().courseWork().create(
+        courseId=course_id,
+        body=coursework
+    ).execute()
+
+def add_course_materials(service, course_id, title, description, materials):
+    """Add materials to a course"""
+    material = {
+        'title': title,
+        'description': description,
+        'materials': materials
+    }
+    return service.courses().courseWorkMaterials().create(
+        courseId=course_id,
+        body=material
+    ).execute()
+
+def create_drive_file_material(drive_file_id):
+    """Create material from Google Drive file"""
+    return {
+        'driveFile': {
+            'driveFile': {
+                'id': drive_file_id,
+                'title': 'Drive File'
+            },
+            'shareMode': 'VIEW'  # or 'EDIT' if students should edit
+        }
+    }
+
+def create_link_material(url, title):
+    """Create material from external link"""
+    return {
+        'link': {
+            'url': url,
+            'title': title
+        }
+    }
+
+
 # ===== MAIN PAGE =====
 def main():
     # Authentication check
@@ -250,7 +340,7 @@ def main():
             st.markdown(f"## {course['name']}")
             st.caption(f"Section: {course.get('section', 'N/A')} • Room: {course.get('room', 'N/A')}")
             
-            tab1, tab2, tab3 = st.tabs(["Announcements", "Students", "Course Details"])
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["Announcements", "Students", "Course Details", "Upload Materials", "Create Assignments"])
             
             with tab1:
                 # Announcements section
@@ -283,32 +373,44 @@ def main():
                 else:
                     st.info("No announcements yet")
             
-            with tab2:
-                # Students section
+            with tab2:  # Students tab
                 st.subheader("Enrolled Students")
-            
-                students = list_students(service, course['id'])
-                if students:
-                    for student in students:
-                        with stylable_container(
-                            key=f"student_{student['userId']}",
-                            css_styles="""
-                            {
-                            background: white;
-                            border-radius: 10px;
-                            padding: 1rem;
-                            margin: 0.5rem 0;
-                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-                        }
-                        """
-                        ):
-                            col1, col2 = st.columns([1, 3])
-                            with col1:
-                                st.markdown(f"**{student['profile']['name']['fullName']}**")
-                            with col2:
-                                st.markdown(f"`{student['profile']['emailAddress']}`")
-                else:
-                    st.info("No students enrolled yet")
+
+                # 🧑‍🎓 Show list of enrolled students
+                try:
+                    students = list_students(service, course['id'])
+                    if students:
+                        for student in students:
+                            profile = student.get("profile", {})
+                            name = profile.get("name", {}).get("fullName", "Unknown Name")
+                            email = profile.get("emailAddress", "Unknown Email")
+
+                            st.markdown(f"- **{name}** ({email})")
+                    else:
+                        st.info("No students enrolled yet.")
+                except Exception as e:
+                    st.error(f"Failed to load students: {e}")
+
+                # ➕ Add new student form
+                with st.expander("Enroll New Student", expanded=False):
+                    with st.form("enroll_student_form"):
+                        student_email = st.text_input(
+                            "Student Email",
+                            placeholder="student@school.edu",
+                            help="The email address the student uses for Classroom"
+                        )   
+
+                        if st.form_submit_button("Enroll Student"):
+                            if student_email:
+                                result = enroll_student(service, course['id'], student_email)
+                                if 'success' in result:
+                                    st.success(result['success'])
+                                    st.rerun()
+                                elif 'warning' in result:
+                                    st.warning(result['warning'])
+                                else:
+                                    st.error(result['error'])
+
         
             with tab3:
                 # Course details section
@@ -336,6 +438,72 @@ def main():
                 
                     if course.get('description'):
                         st.markdown(course['description'])
+
+            with tab4:  # Upload Materials
+                st.subheader("Upload Course Materials")
+                
+                with st.expander("Add New Materials", expanded=True):
+                    with st.form("material_form"):
+                        material_title = st.text_input("Material Title", placeholder="Lecture Slides Week 1")
+                        material_description = st.text_area("Description", placeholder="Description of these materials")
+                        
+                        material_type = st.radio("Material Type", ["Google Drive File", "External Link"])
+                        
+                        if material_type == "Google Drive File":
+                            drive_file_id = st.text_input("Google Drive File ID", 
+                                                        help="The ID of the file in Google Drive (found in the file URL)")
+                            materials = [create_drive_file_material(drive_file_id)] if drive_file_id else None
+                        else:
+                            link_url = st.text_input("URL", placeholder="https://example.com/resource")
+                            link_title = st.text_input("Link Title", placeholder="Resource Title")
+                            materials = [create_link_material(link_url, link_title)] if link_url and link_title else None
+                        
+                        submitted = st.form_submit_button("Upload Materials")
+                        if submitted and materials:
+                            try:
+                                result = add_course_materials(service, course['id'], material_title, material_description, materials)
+                                st.success("Materials uploaded successfully!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error uploading materials: {str(e)}")
+
+            with tab5:  # Create Assignments
+                st.subheader("Create Assignments")
+                
+                with st.expander("Create New Assignment", expanded=True):
+                    with st.form("assignment_form"):
+                        assignment_title = st.text_input("Assignment Title", placeholder="Homework 1")
+                        assignment_description = st.text_area("Description", placeholder="Assignment instructions...")
+                        due_date = st.date_input("Due Date", min_value=datetime.now().date())
+                        
+                        # Optional materials for assignment
+                        st.markdown("**Add Materials (Optional)**")
+                        drive_file_id = st.text_input("Google Drive File ID (optional)", 
+                                                    help="Attach a file from Google Drive")
+                        link_url = st.text_input("External URL (optional)", placeholder="https://example.com/resource")
+                        link_title = st.text_input("Link Title (optional)", placeholder="Resource Title")
+                        
+                        materials = []
+                        if drive_file_id:
+                            materials.append(create_drive_file_material(drive_file_id))
+                        if link_url and link_title:
+                            materials.append(create_link_material(link_url, link_title))
+                        
+                        submitted = st.form_submit_button("Create Assignment")
+                        if submitted and assignment_title:
+                            try:
+                                result = create_coursework(
+                                    service, 
+                                    course['id'], 
+                                    assignment_title, 
+                                    assignment_description, 
+                                    due_date,
+                                    materials if materials else None
+                                )
+                                st.success("Assignment created successfully!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error creating assignment: {str(e)}")
 
     else:
         # Course list view with more stable rendering
